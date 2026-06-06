@@ -1,4 +1,4 @@
-import os, re, io, json, chardet
+import os, re, io, json, logging, chardet
 from fastapi import FastAPI, UploadFile, File, HTTPException, Header
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
@@ -6,11 +6,19 @@ from zhipuai import ZhipuAI
 from docx import Document
 
 load_dotenv()
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("skip-read")
 
 app = FastAPI()
+# 允许 GitHub Pages 主域 + 自定义域名（如有，通过 ALLOWED_ORIGINS 环境变量补充，逗号分隔）
+_DEFAULT_ORIGINS = [
+    "https://ocelot-uxui.github.io",
+]
+_extra = [o.strip() for o in os.getenv("ALLOWED_ORIGINS", "").split(",") if o.strip()]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_DEFAULT_ORIGINS + _extra,
+    allow_origin_regex=r"^https?://localhost(:\d+)?$",  # 本地调试
     allow_methods=["POST"],
     allow_headers=["*"],
 )
@@ -218,8 +226,22 @@ def generate_qa(section_title: str, chapter_title: str, content: str, client: Zh
 
 
 def make_client(api_key: str | None) -> ZhipuAI | None:
-    key = api_key or os.getenv("ZHIPUAI_API_KEY")
-    return ZhipuAI(api_key=key) if key else None
+    """仅使用前端传入的 Key，避免后端兜底 Key 被陌生人滥用。"""
+    return ZhipuAI(api_key=api_key) if api_key else None
+
+
+# 简单的文件魔数校验：txt/md 是文本，docx 是 ZIP（PK\x03\x04）
+def _looks_like_docx(raw: bytes) -> bool:
+    return raw[:4] == b"PK\x03\x04"
+
+
+def _looks_like_text(raw: bytes) -> bool:
+    sample = raw[:4096]
+    # 排除明显的二进制文件头
+    if sample.startswith((b"\x7fELF", b"MZ", b"\x89PNG", b"\xff\xd8\xff", b"GIF8", b"%PDF")):
+        return False
+    # 简单 NUL 字节检测：超过 1% 视为二进制
+    return sample.count(b"\x00") < max(1, len(sample) // 100)
 
 
 @app.post("/upload")
@@ -227,6 +249,8 @@ async def upload_book(
     file: UploadFile = File(...),
     x_api_key: str | None = Header(default=None),
 ):
+    if not x_api_key:
+        raise HTTPException(401, "请在前端「设置」中填入你的智谱 API Key")
     name = file.filename.lower()
     if name.endswith(".doc") and not name.endswith(".docx"):
         raise HTTPException(400, "暂不支持 .doc 旧格式，请在 Word 中另存为 .docx 后再上传")
@@ -237,6 +261,14 @@ async def upload_book(
     if len(raw) > 5 * 1024 * 1024:
         raise HTTPException(400, "文件不能超过 5MB")
 
+    # 魔数校验：防止改后缀绕过
+    if name.endswith(".docx"):
+        if not _looks_like_docx(raw):
+            raise HTTPException(400, "文件不是有效的 .docx（DOCX 应为 ZIP 格式）")
+    else:
+        if not _looks_like_text(raw):
+            raise HTTPException(400, "文件不是有效的文本文件")
+
     try:
         text, chapters = parse_book(file.filename, raw)
     except Exception as e:
@@ -244,6 +276,8 @@ async def upload_book(
 
     book_title = re.sub(r"\.(txt|md|docx)$", "", file.filename, flags=re.I)
     client = make_client(x_api_key)
+    if client is None:
+        raise HTTPException(401, "API Key 无效")
 
     result_chapters = []
     for ch in chapters:
@@ -259,8 +293,8 @@ async def upload_book(
                     qa = generate_qa(sec["title"], ch["title"], content, client)
                     q = qa.get("question", q)
                     a = qa.get("answer", "")
-                except Exception:
-                    pass  # fall back to rule-based title if AI fails
+                except Exception as e:
+                    logger.warning("AI generation failed for %r: %s", sec["title"], e)
             cards.append({
                 "title": sec["title"],
                 "q": q,
