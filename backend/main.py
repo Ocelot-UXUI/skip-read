@@ -2,15 +2,15 @@ import os, re, io, json, logging, chardet
 from fastapi import FastAPI, UploadFile, File, HTTPException, Header
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
-from openai import OpenAI
+from openai import AsyncOpenAI
 from docx import Document
 
 # 支持的 LLM 服务商（均兼容 OpenAI Chat Completions 协议）
 PROVIDERS = {
-    "zhipu":    {"base_url": "https://open.bigmodel.cn/api/paas/v4/", "default_model": "glm-4-flash"},
-    "deepseek": {"base_url": "https://api.deepseek.com/v1",           "default_model": "deepseek-chat"},
-    "openai":   {"base_url": "https://api.openai.com/v1",             "default_model": "gpt-4o-mini"},
-    "moonshot": {"base_url": "https://api.moonshot.cn/v1",            "default_model": "moonshot-v1-8k"},
+    "zhipu": {"base_url": "https://open.bigmodel.cn/api/paas/v4/", "default_model": "glm-4-flash"},
+    "deepseek": {"base_url": "https://api.deepseek.com/v1", "default_model": "deepseek-chat"},
+    "openai": {"base_url": "https://api.openai.com/v1", "default_model": "gpt-4o-mini"},
+    "moonshot": {"base_url": "https://api.moonshot.cn/v1", "default_model": "moonshot-v1-8k"},
 }
 
 load_dotenv()
@@ -217,10 +217,10 @@ def parse_book(filename: str, raw: bytes) -> tuple[str, list[dict]]:
     return text, normalize_sections(chapters)
 
 
-def generate_qa(section_title: str, chapter_title: str, content: str,
-                client: OpenAI, model: str) -> dict:
+async def generate_qa(section_title: str, chapter_title: str, content: str,
+                      client: AsyncOpenAI, model: str) -> dict:
     snippet = content.strip()[:CHARS_PER_SECTION]
-    response = client.chat.completions.create(
+    response = await client.chat.completions.create(
         model=model,
         messages=[
             {"role": "system", "content": SYSTEM_PROMPT},
@@ -234,22 +234,32 @@ def generate_qa(section_title: str, chapter_title: str, content: str,
     return json.loads(m.group())
 
 
-def make_client(provider: str, api_key: str | None) -> OpenAI | None:
-    """根据 provider 选择 base_url，仅使用前端传入的 Key。"""
+def make_client(provider: str, api_key: str | None) -> AsyncOpenAI | None:
+    """Create an OpenAI-compatible client for the selected provider.
+
+    Args:
+        provider: LLM provider key from PROVIDERS.
+        api_key: User-provided API key from request headers.
+
+    Returns:
+        AsyncOpenAI client when provider and key are valid, otherwise None.
+    """
     if not api_key:
         return None
     cfg = PROVIDERS.get(provider)
     if not cfg:
         return None
-    return OpenAI(api_key=api_key, base_url=cfg["base_url"])
+    return AsyncOpenAI(api_key=api_key, base_url=cfg["base_url"])
 
 
 # 简单的文件魔数校验：txt/md 是文本，docx 是 ZIP（PK\x03\x04）
 def _looks_like_docx(raw: bytes) -> bool:
+    """Return whether raw bytes look like a DOCX zip container."""
     return raw[:4] == b"PK\x03\x04"
 
 
 def _looks_like_text(raw: bytes) -> bool:
+    """Return whether raw bytes look like plain text instead of binary."""
     sample = raw[:4096]
     # 排除明显的二进制文件头
     if sample.startswith((b"\x7fELF", b"MZ", b"\x89PNG", b"\xff\xd8\xff", b"GIF8", b"%PDF")):
@@ -265,8 +275,6 @@ async def upload_book(
     x_provider: str | None = Header(default=None),
     x_model: str | None = Header(default=None),
 ):
-    if not x_api_key:
-        raise HTTPException(401, "请在前端「配置 AI」中填入 API Key")
     provider = (x_provider or "zhipu").lower()
     if provider not in PROVIDERS:
         raise HTTPException(400, f"不支持的服务商：{provider}（可选：{', '.join(PROVIDERS)}）")
@@ -296,35 +304,36 @@ async def upload_book(
 
     book_title = re.sub(r"\.(txt|md|docx)$", "", file.filename, flags=re.I)
     client = make_client(provider, x_api_key)
-    if client is None:
-        raise HTTPException(401, "API Key 无效")
-
     result_chapters = []
-    for ch in chapters:
-        cards = []
-        for sec in ch["sections"][:20]:
-            content = sec["content"].strip()
-            if not content:
-                continue
-            paras = [p.strip() for p in re.split(r"\n+", content) if p.strip()]
-            q, a = sec["title"] + "的核心内容是什么？", ""
-            if client:
-                try:
-                    qa = generate_qa(sec["title"], ch["title"], content, client, model)
-                    q = qa.get("question", q)
-                    a = qa.get("answer", "")
-                except Exception as e:
-                    logger.warning("AI generation failed for %r: %s", sec["title"], e)
-            cards.append({
-                "title": sec["title"],
-                "q": q,
-                "a": a,
-                "ps": 1,
-                "p": ["".join(f"<p>{p}</p>" for p in paras)]
-            })
+    try:
+        for ch in chapters:
+            cards = []
+            for sec in ch["sections"][:20]:
+                content = sec["content"].strip()
+                if not content:
+                    continue
+                paras = [p.strip() for p in re.split(r"\n+", content) if p.strip()]
+                q, a = sec["title"] + "的核心内容是什么？", ""
+                if client:
+                    try:
+                        qa = await generate_qa(sec["title"], ch["title"], content, client, model)
+                        q = qa.get("question", q)
+                        a = qa.get("answer", "")
+                    except Exception as e:
+                        logger.warning("AI generation failed for %r: %s", sec["title"], e)
+                cards.append({
+                    "title": sec["title"],
+                    "q": q,
+                    "a": a,
+                    "ps": 1,
+                    "p": ["".join(f"<p>{p}</p>" for p in paras)]
+                })
 
-        if cards:
-            result_chapters.append({"title": ch["title"], "cards": cards})
+            if cards:
+                result_chapters.append({"title": ch["title"], "cards": cards})
+    finally:
+        if client:
+            await client.close()
 
     if not result_chapters:
         raise HTTPException(422, "未能解析出有效章节，请确认文件格式")
