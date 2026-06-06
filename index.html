@@ -2073,7 +2073,7 @@
     <div class="sidebar-item">⭐ 收藏</div>
     <div class="sidebar-item">🕐 最近阅读</div>
     <div class="sidebar-item">📥 下载管理</div>
-    <div class="sidebar-item">⚙️ 设置</div>
+    <div class="sidebar-item" id="settingsItem">⚙️ 设置</div>
   </div>
 
 
@@ -2733,13 +2733,17 @@
       localStorage.setItem(MODEL_STORAGE, model);
     } catch (e) { /* 隐私模式下忽略 */ }
     closeModal('apiKeyModal');
-    // Re-open import modal with the file still selected
+    // 从设置入口进入时无文件，仅保存配置
+    if (!selectedFile) return;
+    // 导入流程：重新打开导入弹窗并发起上传
     document.getElementById('importModal').classList.add('show');
     doUpload(selectedFile, key, provider, model);
   });
 
   document.getElementById('apiKeySkipBtn').addEventListener('click', () => {
     closeModal('apiKeyModal');
+    // 从设置入口打开时不带文件，直接关闭即可
+    if (!selectedFile) return;
     document.getElementById('importModal').classList.add('show');
     // 跳过 = 不调用 AI，直接客户端解析（后端会因缺 Key 报 401）
     importConfirmBtn.textContent = '本地解析中…';
@@ -2750,6 +2754,17 @@
       importConfirmBtn.classList.add('active');
       importConfirmBtn.disabled = false;
     });
+  });
+
+  // ── Settings entry: open AI config modal directly ─────────────────────────
+  document.getElementById('settingsItem').addEventListener('click', () => {
+    sidebar.classList.remove('show');
+    sidebarOverlay.classList.remove('show');
+    selectedFile = null; // 标记为非导入流程
+    document.getElementById('apiKeyInput').value = getSavedApiKey();
+    document.getElementById('providerSelect').value = getSavedProvider();
+    document.getElementById('modelInput').value = getSavedModel();
+    document.getElementById('apiKeyModal').classList.add('show');
   });
 
   function parseBookToChapters(text, filename) {
