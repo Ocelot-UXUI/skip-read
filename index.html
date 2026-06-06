@@ -2565,10 +2565,28 @@
     if (file) setSelectedFile(file);
   });
 
-  const BACKEND_URL = 'https://scintillating-delight-production.up.railway.app';
+  // 后端地址：优先用 URL ?backend=xxx，其次 window.__SKIP_READ_BACKEND__，最后默认值
+  const BACKEND_URL =
+    new URLSearchParams(location.search).get('backend') ||
+    window.__SKIP_READ_BACKEND__ ||
+    'https://scintillating-delight-production.up.railway.app';
   const API_KEY_STORAGE = 'zhipu_api_key';
 
-  function getSavedApiKey() { return localStorage.getItem(API_KEY_STORAGE) || ''; }
+  function getSavedApiKey() {
+    try { return localStorage.getItem(API_KEY_STORAGE) || ''; }
+    catch (e) { return ''; }
+  }
+
+  // localStorage 安全写入：超容量或被禁用时静默失败并提醒
+  function safeSetBook(bookId, payload) {
+    try {
+      localStorage.setItem('book_' + bookId, JSON.stringify(payload));
+      return true;
+    } catch (e) {
+      alert('本地存储已满或不可用，无法保存这本书。请删除一些已导入的书后重试。');
+      return false;
+    }
+  }
 
   // ── Upload with optional API key ──────────────────────────────────────────
   async function doUpload(file, apiKey) {
@@ -2590,12 +2608,15 @@
 
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
-        throw new Error(err.detail || '上传失败');
+        throw new Error(err.detail || `上传失败（${res.status}）`);
       }
 
       const data = await res.json();
       const bookId = 'book_' + Date.now();
-      localStorage.setItem('book_' + bookId, JSON.stringify({ title: data.title, chapters: data.chapters }));
+      if (!safeSetBook(bookId, { title: data.title, chapters: data.chapters })) {
+        resetBtn();
+        return;
+      }
       addBookCardToShelf(bookId, data.title);
       closeModal('importModal');
 
@@ -2603,21 +2624,54 @@
       const isNetworkError = e instanceof TypeError || e.name === 'TypeError';
       if (isNetworkError) {
         // Backend unreachable → full client-side fallback
-        const reader = new FileReader();
-        reader.onload = (ev) => {
-          const text = ev.target.result;
-          const bookTitle = file.name.replace(/\.(txt|md|docx|doc)$/i, '');
-          const chapters = parseBookToChapters(text, file.name);
-          const bookId = 'book_' + Date.now();
-          localStorage.setItem('book_' + bookId, JSON.stringify({ title: bookTitle, chapters }));
-          addBookCardToShelf(bookId, bookTitle);
-          closeModal('importModal');
-        };
-        reader.readAsText(file, 'UTF-8');
+        importConfirmBtn.textContent = '后端不可达，本地解析中…';
+        clientSideImport(file, resetBtn);
       } else {
         importConfirmBtn.textContent = e.message;
         setTimeout(resetBtn, 2500);
       }
+    }
+  }
+
+  // 客户端回退：仅做章节切分，无 AI QA
+  function clientSideImport(file, onDone) {
+    const reader = new FileReader();
+    const TIMEOUT_MS = 30000;
+    const timer = setTimeout(() => {
+      reader.abort();
+      importConfirmBtn.textContent = '读取超时';
+      if (onDone) setTimeout(onDone, 2000);
+    }, TIMEOUT_MS);
+
+    reader.onerror = () => {
+      clearTimeout(timer);
+      importConfirmBtn.textContent = '文件读取失败';
+      if (onDone) setTimeout(onDone, 2000);
+    };
+    reader.onload = (ev) => {
+      clearTimeout(timer);
+      try {
+        const text = ev.target.result;
+        const bookTitle = file.name.replace(/\.(txt|md|docx|doc)$/i, '');
+        const chapters = parseBookToChapters(text, file.name);
+        const bookId = 'book_' + Date.now();
+        if (!safeSetBook(bookId, { title: bookTitle, chapters })) {
+          if (onDone) onDone();
+          return;
+        }
+        addBookCardToShelf(bookId, bookTitle);
+        closeModal('importModal');
+      } catch (err) {
+        importConfirmBtn.textContent = '解析失败：' + (err.message || '未知错误');
+        if (onDone) setTimeout(onDone, 2500);
+      }
+    };
+    try {
+      reader.readAsText(file, 'UTF-8');
+    } catch (err) {
+      clearTimeout(timer);
+      importConfirmBtn.textContent = '不支持的文件类型';
+      if (onDone) setTimeout(onDone, 2000);
     }
   }
 
@@ -2643,7 +2697,7 @@
   document.getElementById('apiKeySaveBtn').addEventListener('click', () => {
     const key = document.getElementById('apiKeyInput').value.trim();
     if (!key) { document.getElementById('apiKeyInput').style.borderColor = '#ff4d4f'; return; }
-    localStorage.setItem(API_KEY_STORAGE, key);
+    try { localStorage.setItem(API_KEY_STORAGE, key); } catch (e) { /* 隐私模式下忽略 */ }
     closeModal('apiKeyModal');
     // Re-open import modal with the file still selected
     document.getElementById('importModal').classList.add('show');
@@ -2653,7 +2707,15 @@
   document.getElementById('apiKeySkipBtn').addEventListener('click', () => {
     closeModal('apiKeyModal');
     document.getElementById('importModal').classList.add('show');
-    doUpload(selectedFile, '');
+    // 跳过 = 不调用 AI，直接客户端解析（后端会因缺 Key 报 401）
+    importConfirmBtn.textContent = '本地解析中…';
+    importConfirmBtn.classList.remove('active');
+    importConfirmBtn.disabled = true;
+    clientSideImport(selectedFile, () => {
+      importConfirmBtn.textContent = '确认导入';
+      importConfirmBtn.classList.add('active');
+      importConfirmBtn.disabled = false;
+    });
   });
 
   function parseBookToChapters(text, filename) {
@@ -2978,7 +3040,10 @@
       loadBook(defaultChaptersData);
     } else {
       const stored = localStorage.getItem('book_' + bookId);
-      if (stored) loadBook(JSON.parse(stored).chapters);
+      if (stored) {
+        try { loadBook(JSON.parse(stored).chapters); }
+        catch (e) { console.warn('book parse failed:', e); }
+      }
     }
     currentPage = 0;
     toolbarVisible = false;
