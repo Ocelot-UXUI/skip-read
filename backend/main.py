@@ -2,8 +2,16 @@ import os, re, io, json, logging, chardet
 from fastapi import FastAPI, UploadFile, File, HTTPException, Header
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
-from zhipuai import ZhipuAI
+from openai import OpenAI
 from docx import Document
+
+# 支持的 LLM 服务商（均兼容 OpenAI Chat Completions 协议）
+PROVIDERS = {
+    "zhipu":    {"base_url": "https://open.bigmodel.cn/api/paas/v4/", "default_model": "glm-4-flash"},
+    "deepseek": {"base_url": "https://api.deepseek.com/v1",           "default_model": "deepseek-chat"},
+    "openai":   {"base_url": "https://api.openai.com/v1",             "default_model": "gpt-4o-mini"},
+    "moonshot": {"base_url": "https://api.moonshot.cn/v1",            "default_model": "moonshot-v1-8k"},
+}
 
 load_dotenv()
 logging.basicConfig(level=logging.INFO)
@@ -209,10 +217,11 @@ def parse_book(filename: str, raw: bytes) -> tuple[str, list[dict]]:
     return text, normalize_sections(chapters)
 
 
-def generate_qa(section_title: str, chapter_title: str, content: str, client: ZhipuAI) -> dict:
+def generate_qa(section_title: str, chapter_title: str, content: str,
+                client: OpenAI, model: str) -> dict:
     snippet = content.strip()[:CHARS_PER_SECTION]
     response = client.chat.completions.create(
-        model="glm-4-flash",
+        model=model,
         messages=[
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": f"章节：{chapter_title}\n小节：{section_title}\n\n内容（节选）：\n{snippet}"}
@@ -225,9 +234,14 @@ def generate_qa(section_title: str, chapter_title: str, content: str, client: Zh
     return json.loads(m.group())
 
 
-def make_client(api_key: str | None) -> ZhipuAI | None:
-    """仅使用前端传入的 Key，避免后端兜底 Key 被陌生人滥用。"""
-    return ZhipuAI(api_key=api_key) if api_key else None
+def make_client(provider: str, api_key: str | None) -> OpenAI | None:
+    """根据 provider 选择 base_url，仅使用前端传入的 Key。"""
+    if not api_key:
+        return None
+    cfg = PROVIDERS.get(provider)
+    if not cfg:
+        return None
+    return OpenAI(api_key=api_key, base_url=cfg["base_url"])
 
 
 # 简单的文件魔数校验：txt/md 是文本，docx 是 ZIP（PK\x03\x04）
@@ -248,9 +262,15 @@ def _looks_like_text(raw: bytes) -> bool:
 async def upload_book(
     file: UploadFile = File(...),
     x_api_key: str | None = Header(default=None),
+    x_provider: str | None = Header(default=None),
+    x_model: str | None = Header(default=None),
 ):
     if not x_api_key:
-        raise HTTPException(401, "请在前端「设置」中填入你的智谱 API Key")
+        raise HTTPException(401, "请在前端「配置 AI」中填入 API Key")
+    provider = (x_provider or "zhipu").lower()
+    if provider not in PROVIDERS:
+        raise HTTPException(400, f"不支持的服务商：{provider}（可选：{', '.join(PROVIDERS)}）")
+    model = (x_model or "").strip() or PROVIDERS[provider]["default_model"]
     name = file.filename.lower()
     if name.endswith(".doc") and not name.endswith(".docx"):
         raise HTTPException(400, "暂不支持 .doc 旧格式，请在 Word 中另存为 .docx 后再上传")
@@ -275,7 +295,7 @@ async def upload_book(
         raise HTTPException(400, f"文件解析失败：{e}")
 
     book_title = re.sub(r"\.(txt|md|docx)$", "", file.filename, flags=re.I)
-    client = make_client(x_api_key)
+    client = make_client(provider, x_api_key)
     if client is None:
         raise HTTPException(401, "API Key 无效")
 
@@ -290,7 +310,7 @@ async def upload_book(
             q, a = sec["title"] + "的核心内容是什么？", ""
             if client:
                 try:
-                    qa = generate_qa(sec["title"], ch["title"], content, client)
+                    qa = generate_qa(sec["title"], ch["title"], content, client, model)
                     q = qa.get("question", q)
                     a = qa.get("answer", "")
                 except Exception as e:
