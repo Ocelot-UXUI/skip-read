@@ -1641,6 +1641,38 @@
   }
   .modal-confirm-btn.active:hover { background: #28ba6e; }
   .modal-confirm-btn.active:active { transform: scale(0.98); }
+  .api-config-desc {
+    margin-bottom: 16px;
+    color: #555;
+    font-size: 14px;
+    line-height: 1.6;
+  }
+  .api-config-label {
+    display: block;
+    margin-bottom: 6px;
+    color: #888;
+    font-size: 12px;
+  }
+  .api-config-input {
+    width: 100%;
+    margin-bottom: 12px;
+    padding: 12px;
+    border: 1px solid #e0e0e0;
+    border-radius: 10px;
+    outline: none;
+    background: #fff;
+    font-size: 14px;
+  }
+  .api-config-secondary-btn {
+    width: 100%;
+    padding: 14px;
+    border: none;
+    border-radius: 12px;
+    background: #f0f0f2;
+    color: #555;
+    cursor: pointer;
+    font-size: 16px;
+  }
 
   /* AI Chat Modal */
   .ai-modal-sheet {
@@ -2470,28 +2502,22 @@
       <button class="modal-close" onclick="closeModal('apiKeyModal')">✕</button>
     </div>
     <div class="modal-body">
-      <p style="font-size:14px;color:#555;margin-bottom:16px;line-height:1.6">
+      <p class="api-config-desc">
         导入时可使用 AI 自动生成 QA 卡片。选择你拥有 Key 的服务商，或跳过使用基础模式。
       </p>
-      <label style="display:block;font-size:12px;color:#888;margin-bottom:6px">服务商</label>
-      <select id="providerSelect"
-        style="width:100%;padding:12px;border:1px solid #e0e0e0;border-radius:10px;font-size:14px;outline:none;margin-bottom:12px;background:#fff">
+      <label class="api-config-label">服务商</label>
+      <select class="api-config-input" id="providerSelect">
         <option value="zhipu">智谱 GLM（open.bigmodel.cn）</option>
         <option value="deepseek">DeepSeek（api.deepseek.com）</option>
         <option value="openai">OpenAI（api.openai.com）</option>
         <option value="moonshot">Moonshot Kimi（api.moonshot.cn）</option>
       </select>
-      <label style="display:block;font-size:12px;color:#888;margin-bottom:6px">API Key</label>
-      <input type="text" id="apiKeyInput" placeholder="粘贴你的 API Key"
-        style="width:100%;padding:12px;border:1px solid #e0e0e0;border-radius:10px;font-size:14px;outline:none;margin-bottom:12px">
-      <label style="display:block;font-size:12px;color:#888;margin-bottom:6px">模型（可留空用默认）</label>
-      <input type="text" id="modelInput" placeholder="留空使用默认模型"
-        style="width:100%;padding:12px;border:1px solid #e0e0e0;border-radius:10px;font-size:14px;outline:none;margin-bottom:12px">
+      <label class="api-config-label">API Key</label>
+      <input class="api-config-input" type="text" id="apiKeyInput" placeholder="粘贴你的 API Key">
+      <label class="api-config-label">模型（可留空用默认）</label>
+      <input class="api-config-input" type="text" id="modelInput" placeholder="留空使用默认模型">
       <button class="modal-confirm-btn active" id="apiKeySaveBtn" style="margin-bottom:8px">保存并导入</button>
-      <button class="modal-confirm-btn" id="apiKeySkipBtn"
-        style="background:#f0f0f2;color:#555;border:none;width:100%;padding:14px;border-radius:12px;font-size:16px;cursor:pointer">
-        跳过，不使用 AI
-      </button>
+      <button class="api-config-secondary-btn" id="apiKeySkipBtn">跳过，不使用 AI</button>
     </div>
   </div>
 </div>
@@ -2561,7 +2587,9 @@
   fileUploadArea.addEventListener('click', () => fileInput.click());
 
   fileInput.addEventListener('change', () => {
-    if (fileInput.files[0]) setSelectedFile(fileInput.files[0]);
+    if (fileInput.files[0]) {
+      setSelectedFile(fileInput.files[0]);
+    }
   });
 
   fileUploadArea.addEventListener('dragover', (e) => {
@@ -2573,14 +2601,16 @@
     e.preventDefault();
     fileUploadArea.classList.remove('drag-over');
     const file = e.dataTransfer.files[0];
-    if (file) setSelectedFile(file);
+    if (file) {
+      setSelectedFile(file);
+    }
   });
 
   // 后端地址：优先用 URL ?backend=xxx，其次 window.__SKIP_READ_BACKEND__，最后默认值
   const BACKEND_URL =
-    new URLSearchParams(location.search).get('backend') ||
-    window.__SKIP_READ_BACKEND__ ||
-    'https://scintillating-delight-production.up.railway.app';
+    new URLSearchParams(location.search).get('backend')
+    || window.__SKIP_READ_BACKEND__
+    || 'https://scintillating-delight-production.up.railway.app';
   const API_KEY_STORAGE = 'llm_api_key';
   const PROVIDER_STORAGE = 'llm_provider';
   const MODEL_STORAGE = 'llm_model';
@@ -2627,8 +2657,12 @@
       const headers = {};
       if (apiKey) {
         headers['X-API-Key'] = apiKey;
-        if (provider) headers['X-Provider'] = provider;
-        if (model)    headers['X-Model']    = model;
+        if (provider) {
+          headers['X-Provider'] = provider;
+        }
+        if (model) {
+          headers['X-Model'] = model;
+        }
       }
       const res = await fetch(`${BACKEND_URL}/upload`, { method: 'POST', body: formData, headers });
 
@@ -2649,9 +2683,8 @@
     } catch (e) {
       const isNetworkError = e instanceof TypeError || e.name === 'TypeError';
       if (isNetworkError) {
-        // Backend unreachable → full client-side fallback
-        importConfirmBtn.textContent = '后端不可达，本地解析中…';
-        clientSideImport(file, resetBtn);
+        importConfirmBtn.textContent = '后端不可达，请稍后重试';
+        setTimeout(resetBtn, 2500);
       } else {
         importConfirmBtn.textContent = e.message;
         setTimeout(resetBtn, 2500);
@@ -2659,53 +2692,15 @@
     }
   }
 
-  // 客户端回退：仅做章节切分，无 AI QA
-  function clientSideImport(file, onDone) {
-    const reader = new FileReader();
-    const TIMEOUT_MS = 30000;
-    const timer = setTimeout(() => {
-      reader.abort();
-      importConfirmBtn.textContent = '读取超时';
-      if (onDone) setTimeout(onDone, 2000);
-    }, TIMEOUT_MS);
-
-    reader.onerror = () => {
-      clearTimeout(timer);
-      importConfirmBtn.textContent = '文件读取失败';
-      if (onDone) setTimeout(onDone, 2000);
-    };
-    reader.onload = (ev) => {
-      clearTimeout(timer);
-      try {
-        const text = ev.target.result;
-        const bookTitle = file.name.replace(/\.(txt|md|docx|doc)$/i, '');
-        const chapters = parseBookToChapters(text, file.name);
-        const bookId = 'book_' + Date.now();
-        if (!safeSetBook(bookId, { title: bookTitle, chapters })) {
-          if (onDone) onDone();
-          return;
-        }
-        addBookCardToShelf(bookId, bookTitle);
-        closeModal('importModal');
-      } catch (err) {
-        importConfirmBtn.textContent = '解析失败：' + (err.message || '未知错误');
-        if (onDone) setTimeout(onDone, 2500);
-      }
-    };
-    try {
-      reader.readAsText(file, 'UTF-8');
-    } catch (err) {
-      clearTimeout(timer);
-      importConfirmBtn.textContent = '不支持的文件类型';
-      if (onDone) setTimeout(onDone, 2000);
-    }
-  }
-
   // ── Confirm import: check API key first ───────────────────────────────────
   importConfirmBtn.addEventListener('click', () => {
-    if (!importConfirmBtn.classList.contains('active')) return;
+    if (!importConfirmBtn.classList.contains('active')) {
+      return;
+    }
     const file = selectedFile;
-    if (!file) return;
+    if (!file) {
+      return;
+    }
 
     const savedKey = getSavedApiKey();
     if (savedKey) {
@@ -2726,15 +2721,22 @@
     const key = document.getElementById('apiKeyInput').value.trim();
     const provider = document.getElementById('providerSelect').value;
     const model = document.getElementById('modelInput').value.trim();
-    if (!key) { document.getElementById('apiKeyInput').style.borderColor = '#ff4d4f'; return; }
+    if (!key) {
+      document.getElementById('apiKeyInput').style.borderColor = '#ff4d4f';
+      return;
+    }
     try {
       localStorage.setItem(API_KEY_STORAGE, key);
       localStorage.setItem(PROVIDER_STORAGE, provider);
       localStorage.setItem(MODEL_STORAGE, model);
-    } catch (e) { /* 隐私模式下忽略 */ }
+    } catch (e) {
+      /* 隐私模式下忽略 */
+    }
     closeModal('apiKeyModal');
     // 从设置入口进入时无文件，仅保存配置
-    if (!selectedFile) return;
+    if (!selectedFile) {
+      return;
+    }
     // 导入流程：重新打开导入弹窗并发起上传
     document.getElementById('importModal').classList.add('show');
     doUpload(selectedFile, key, provider, model);
@@ -2743,24 +2745,18 @@
   document.getElementById('apiKeySkipBtn').addEventListener('click', () => {
     closeModal('apiKeyModal');
     // 从设置入口打开时不带文件，直接关闭即可
-    if (!selectedFile) return;
+    if (!selectedFile) {
+      return;
+    }
     document.getElementById('importModal').classList.add('show');
-    // 跳过 = 不调用 AI，直接客户端解析（后端会因缺 Key 报 401）
-    importConfirmBtn.textContent = '本地解析中…';
-    importConfirmBtn.classList.remove('active');
-    importConfirmBtn.disabled = true;
-    clientSideImport(selectedFile, () => {
-      importConfirmBtn.textContent = '确认导入';
-      importConfirmBtn.classList.add('active');
-      importConfirmBtn.disabled = false;
-    });
+    doUpload(selectedFile, '', '', '');
   });
 
   // ── Settings entry: open AI config modal directly ─────────────────────────
   document.getElementById('settingsItem').addEventListener('click', () => {
     sidebar.classList.remove('show');
     sidebarOverlay.classList.remove('show');
-    selectedFile = null; // 标记为非导入流程
+    selectedFile = null;
     document.getElementById('apiKeyInput').value = getSavedApiKey();
     document.getElementById('providerSelect').value = getSavedProvider();
     document.getElementById('modelInput').value = getSavedModel();
